@@ -14,7 +14,6 @@ val debugKeystorePathOverride = System.getenv("METROLIST_DEBUG_KEYSTORE_PATH")?.
 val debugKeystorePassword = System.getenv("METROLIST_DEBUG_KEYSTORE_PASSWORD")?.takeIf { it.isNotBlank() } ?: "android"
 val debugKeyAlias = System.getenv("METROLIST_DEBUG_KEY_ALIAS")?.takeIf { it.isNotBlank() } ?: "androiddebugkey"
 val debugKeyPassword = System.getenv("METROLIST_DEBUG_KEY_PASSWORD")?.takeIf { it.isNotBlank() } ?: "android"
-val persistentDebugKeystoreFile = file("persistent-debug.keystore")
 val workflowDebugKeystoreFile = debugKeystorePathOverride?.let(::file)
 
 plugins {
@@ -85,17 +84,13 @@ android {
     }
 
     signingConfigs {
-        create("persistentDebug") {
-            storeFile = persistentDebugKeystoreFile
-            storePassword = "android"
-            keyAlias = "androiddebugkey"
-            keyPassword = "android"
-        }
-        create("workflowDebug") {
-            storeFile = workflowDebugKeystoreFile ?: persistentDebugKeystoreFile
-            storePassword = debugKeystorePassword
-            keyAlias = debugKeyAlias
-            keyPassword = debugKeyPassword
+        if (workflowDebugKeystoreFile != null) {
+            create("workflowDebug") {
+                storeFile = workflowDebugKeystoreFile
+                storePassword = debugKeystorePassword
+                keyAlias = debugKeyAlias
+                keyPassword = debugKeyPassword
+            }
         }
         create("release") {
             storeFile = file("keystore/release.keystore")
@@ -107,7 +102,6 @@ android {
             keyAlias = "androiddebugkey"
             keyPassword = "android"
             storePassword = "android"
-            storeFile = file("${System.getProperty("user.home")}/.android/debug.keystore")
         }
     }
 
@@ -134,10 +128,8 @@ android {
                 resValue("string", "app_name", "Meld Debug")
             }
             signingConfig =
-                if (workflowDebugKeystoreFile != null) {
+                if (workflowDebugKeystoreFile != null && workflowDebugKeystoreFile.exists()) {
                     signingConfigs.getByName("workflowDebug")
-                } else if (persistentDebugKeystoreFile.exists()) {
-                    signingConfigs.getByName("persistentDebug")
                 } else {
                     signingConfigs.getByName("debug")
                 }
@@ -218,9 +210,9 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach 
 
 // Android provides org.json as a platform API (/apex/com.android.art/javalib/core-libart.jar).
 // The standalone org.json:json artefact bundles an older Apache Harmony copy of JSONArray that
-// contains an internal `myArrayList` field absent from the platform class.  Without obfuscation
+// contains an internal `myArrayList` field absent from the platform class. Without obfuscation
 // R8 inlines against this internal field; at runtime the platform class is resolved instead,
-// producing a NoSuchFieldError.  Excluding the artefact globally ensures only the platform
+// producing a NoSuchFieldError. Excluding the artefact globally ensures only the platform
 // class is ever referenced.
 configurations.configureEach {
     exclude(group = "org.json", module = "json")
