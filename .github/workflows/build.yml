@@ -138,22 +138,28 @@ jobs:
         run: |
           set -euo pipefail
           keystore="app/persistent-debug.keystore"
-          rm -f "$keystore"
+          tmp_keystore="app/persistent-debug.tmp"
+          rm -f "$keystore" "$tmp_keystore"
 
-          # 1. Strip newlines/whitespace and decode secret if provided
+          # 1. Decode base64 secret into temporary file if present
           if [ -n "${DEBUG_KEYSTORE:-}" ]; then
-            echo "$DEBUG_KEYSTORE" | tr -d '\r\n ' | base64 --decode > "$keystore" 2>/dev/null || rm -f "$keystore"
+            echo "$DEBUG_KEYSTORE" | tr -d '\r\n ' | base64 --decode > "$tmp_keystore" 2>/dev/null || rm -f "$tmp_keystore"
           fi
 
-          # 2. Strict ASN.1 certificate validation
-          if [ -f "$keystore" ]; then
-            if ! keytool -exportcert -keystore "$keystore" -storepass android -alias androiddebugkey >/dev/null 2>&1; then
-              echo "Decoded DEBUG_KEYSTORE is invalid or corrupt. Removing..."
-              rm -f "$keystore"
-            fi
+          # 2. Convert restored PKCS12 keystore into standard JKS for AGP compatibility
+          if [ -f "$tmp_keystore" ]; then
+            echo "Converting restored keystore to JKS format..."
+            keytool -importkeystore \
+              -srckeystore "$tmp_keystore" \
+              -srcstorepass android \
+              -destkeystore "$keystore" \
+              -deststorepass android \
+              -deststoretype JKS \
+              -noprompt >/dev/null 2>&1 || rm -f "$keystore"
+            rm -f "$tmp_keystore"
           fi
 
-          # 3. Fallback: Force JKS keystore generation for AGP compatibility
+          # 3. Fallback: Generate fresh JKS keystore if missing or invalid
           if [ ! -f "$keystore" ]; then
             echo "Generating standard JKS debug keystore..."
             keytool -genkeypair -v \
@@ -165,10 +171,10 @@ jobs:
               -keyalg RSA \
               -keysize 2048 \
               -validity 10000 \
-              -dname "CN=Android Debug,O=Android,C=US"
+              -dname "CN=Android Debug,O=Android,C=US" >/dev/null
           fi
 
-          # 4. Final verification check
+          # 4. Final verification
           keytool -list -keystore "$keystore" -storepass android -alias androiddebugkey >/dev/null
 
       - name: Build Debug APK and Run Lint
