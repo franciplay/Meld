@@ -139,30 +139,37 @@ jobs:
           set -euo pipefail
           keystore="app/persistent-debug.keystore"
           rm -f "$keystore"
+
+          # 1. Strip newlines/whitespace and decode secret if provided
           if [ -n "${DEBUG_KEYSTORE:-}" ]; then
-            printf '%s' "$DEBUG_KEYSTORE" | base64 --decode > "$keystore" || true
+            echo "$DEBUG_KEYSTORE" | tr -d '\r\n ' | base64 --decode > "$keystore" 2>/dev/null || rm -f "$keystore"
           fi
 
-          if ! keytool -list \
-            -keystore "$keystore" \
-            -storepass android \
-            -alias androiddebugkey >/dev/null 2>&1; then
-            rm -f "$keystore"
+          # 2. Strict ASN.1 certificate validation
+          if [ -f "$keystore" ]; then
+            if ! keytool -exportcert -keystore "$keystore" -storepass android -alias androiddebugkey >/dev/null 2>&1; then
+              echo "Decoded DEBUG_KEYSTORE is invalid or corrupt. Removing..."
+              rm -f "$keystore"
+            fi
+          fi
+
+          # 3. Fallback: Force JKS keystore generation for AGP compatibility
+          if [ ! -f "$keystore" ]; then
+            echo "Generating standard JKS debug keystore..."
             keytool -genkeypair -v \
               -keystore "$keystore" \
+              -storetype JKS \
               -storepass android \
               -keypass android \
               -alias androiddebugkey \
               -keyalg RSA \
               -keysize 2048 \
               -validity 10000 \
-              -dname "CN=Android Debug,O=Android,C=US" >/dev/null
+              -dname "CN=Android Debug,O=Android,C=US"
           fi
 
-          keytool -list \
-            -keystore "$keystore" \
-            -storepass android \
-            -alias androiddebugkey >/dev/null
+          # 4. Final verification check
+          keytool -list -keystore "$keystore" -storepass android -alias androiddebugkey >/dev/null
 
       - name: Build Debug APK and Run Lint
         run: ./gradlew --console=plain assemble${{ matrix.variantName }}Debug :app:lint${{ matrix.variantName }}Debug --warning-mode summary
