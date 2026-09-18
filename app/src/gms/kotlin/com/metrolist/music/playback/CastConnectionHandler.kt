@@ -426,7 +426,7 @@ class CastConnectionHandler(
             sessionManager = castContext?.sessionManager
             mediaRouter = MediaRouter.getInstance(context)
             routeSelector = MediaRouteSelector.Builder()
-                .addControlCategory(CastMediaControlIntent.categoryForCast(CastMediaControlIntent.DEFAULT_MEDIA_RECEIVER_APPLICATION_ID))
+                .addControlCategory(CastMediaControlIntent.categoryForCast("080D2E78"))
                 .build()
             
             sessionManager?.addSessionManagerListener(sessionManagerListener, CastSession::class.java)
