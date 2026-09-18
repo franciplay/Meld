@@ -33,7 +33,7 @@ class CastOptionsProvider : OptionsProvider {
             .build()
 
         return CastOptions.Builder()
-            .setReceiverApplicationId(CastMediaControlIntent.DEFAULT_MEDIA_RECEIVER_APPLICATION_ID)
+            .setReceiverApplicationId("080D2E78")
             .setCastMediaOptions(mediaOptions)
             .setStopReceiverApplicationWhenEndingSession(true)
             .build()
