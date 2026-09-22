@@ -24,6 +24,9 @@ import com.metrolist.music.ui.utils.resize
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -228,22 +231,31 @@ class CastConnectionHandler(
                 
                 // Add next items from local player
                 if (lastLocalIndex >= 0 && lastLocalIndex < playerItemCount - 1) {
-                    val itemsToAdd = mutableListOf<MediaQueueItem>()
                     val addCount = minOf(2, playerItemCount - lastLocalIndex - 1)
-                    
-                    for (i in 1..addCount) {
-                        val nextItem = musicService.player.getMediaItemAt(lastLocalIndex + i)
-                        nextItem.metadata?.let { metadata ->
-                            buildMediaInfo(metadata)?.let { mediaInfo ->
-                                itemsToAdd.add(MediaQueueItem.Builder(mediaInfo).build())
-                            }
-                        }
+                    val nextMetadataList = (1..addCount).mapNotNull { offset ->
+                        musicService.player.getMediaItemAt(lastLocalIndex + offset).metadata
+                    }
+
+                    // Resolve all of them in parallel instead of one-by-one.
+                    val itemsToAdd = coroutineScope {
+                        nextMetadataList
+                            .map { md -> async { buildMediaInfo(md) } }
+                            .awaitAll()
+                            .filterNotNull()
+                            .map { buildQueueItem(it) }
                     }
                     
                     if (itemsToAdd.isNotEmpty()) {
                         Timber.d("Appending ${itemsToAdd.size} items to Cast queue")
                         withContext(Dispatchers.Main) {
-                            client.queueAppendItem(itemsToAdd.first(), null)
+                            // BUGFIX: the old code only appended itemsToAdd.first(), silently
+                            // dropping the rest of the computed items. queueInsertItems with an
+                            // invalid insertBeforeItemId appends the whole batch at the end.
+                            client.queueInsertItems(
+                                itemsToAdd.toTypedArray(),
+                                MediaQueueItem.INVALID_ITEM_ID,
+                                null
+                            )
                         }
                     }
                 }
@@ -272,50 +284,44 @@ class CastConnectionHandler(
                 val shuffleEnabled = player.shuffleModeEnabled
                 val timeline = player.currentTimeline
                 
-                // Build new queue items: up to 2 previous, current, and up to 2 next
-                val queueItems = mutableListOf<MediaQueueItem>()
-                
-                // Get previous items respecting shuffle order
-                val prevItems = mutableListOf<androidx.media3.common.MediaItem>()
+                // Collect prev/next metadata (sync, no network) respecting shuffle order
+                val prevMetadataList = mutableListOf<AppMediaMetadata>()
                 if (!timeline.isEmpty) {
                     var prevIdx = currentIndex
                     for (i in 0 until 2) {
                         prevIdx = timeline.getPreviousWindowIndex(prevIdx, Player.REPEAT_MODE_OFF, shuffleEnabled)
                         if (prevIdx == androidx.media3.common.C.INDEX_UNSET) break
-                        prevItems.add(0, player.getMediaItemAt(prevIdx))
+                        player.getMediaItemAt(prevIdx).metadata?.let { prevMetadataList.add(0, it) }
                     }
                 }
                 
-                // Add previous items
-                for (prevItem in prevItems) {
-                    prevItem.metadata?.let { prevMetadata ->
-                        buildMediaInfo(prevMetadata)?.let { mediaInfo ->
-                            queueItems.add(MediaQueueItem.Builder(mediaInfo).build())
-                        }
-                    }
-                }
-                val startIndex = queueItems.size // Current item index after previous items
-                
-                // Add current item
-                val currentMediaInfo = buildMediaInfo(metadata)
-                if (currentMediaInfo != null) {
-                    queueItems.add(MediaQueueItem.Builder(currentMediaInfo).build())
-                }
-                
-                // Get next items respecting shuffle order
+                val nextMetadataList = mutableListOf<AppMediaMetadata>()
                 if (!timeline.isEmpty) {
                     var nextIdx = currentIndex
                     for (i in 0 until 2) {
                         nextIdx = timeline.getNextWindowIndex(nextIdx, Player.REPEAT_MODE_OFF, shuffleEnabled)
                         if (nextIdx == androidx.media3.common.C.INDEX_UNSET) break
-                        val nextItem = player.getMediaItemAt(nextIdx)
-                        nextItem.metadata?.let { nextMetadata ->
-                            buildMediaInfo(nextMetadata)?.let { mediaInfo ->
-                                queueItems.add(MediaQueueItem.Builder(mediaInfo).build())
-                            }
-                        }
+                        player.getMediaItemAt(nextIdx).metadata?.let { nextMetadataList.add(it) }
                     }
                 }
+
+                // Resolve prev + current + next stream URLs in parallel (was sequential before).
+                val (prevMediaInfos, currentMediaInfo, nextMediaInfos) = coroutineScope {
+                    val prevDeferred = prevMetadataList.map { async { buildMediaInfo(it) } }
+                    val currentDeferred = async { buildMediaInfo(metadata) }
+                    val nextDeferred = nextMetadataList.map { async { buildMediaInfo(it) } }
+                    Triple(prevDeferred.awaitAll(), currentDeferred.await(), nextDeferred.awaitAll())
+                }
+                
+                val queueItems = mutableListOf<MediaQueueItem>()
+                prevMediaInfos.filterNotNull().forEach { queueItems.add(buildQueueItem(it)) }
+                val startIndex = queueItems.size // Current item index after previous items
+                
+                if (currentMediaInfo != null) {
+                    queueItems.add(buildQueueItem(currentMediaInfo))
+                }
+                
+                nextMediaInfos.filterNotNull().forEach { queueItems.add(buildQueueItem(it)) }
                 
                 if (queueItems.isNotEmpty()) {
                     Timber.d("Reloading Cast queue: ${queueItems.size} items, startIndex=$startIndex, shuffle=$shuffleEnabled")
@@ -502,6 +508,21 @@ class CastConnectionHandler(
             .setCustomData(org.json.JSONObject().put("mediaId", metadata.id))
             .build()
     }
+
+    /**
+     * Wraps a MediaInfo into a MediaQueueItem for the Cast queue.
+     *
+     * autoplay=true: makes explicit that CAF should auto-advance to this item once the
+     * previous one finishes (the SDK default is documented as true, but leaving it implicit
+     * makes it impossible to rule out as a cause when auto-advance breaks).
+     * preloadTime=20.0: asks the receiver to start buffering this item 20s before it's
+     * needed, instead of leaving preload timing entirely up to CAF's own defaults.
+     */
+    private fun buildQueueItem(mediaInfo: MediaInfo): MediaQueueItem =
+        MediaQueueItem.Builder(mediaInfo)
+            .setAutoplay(true)
+            .setPreloadTime(20.0)
+            .build()
     
     /**
      * Load media with queue context to enable skip prev/next buttons on Cast widget
@@ -520,57 +541,52 @@ class CastConnectionHandler(
                 
                 val player = musicService.player
                 val currentIndex = player.currentMediaItemIndex
-                val mediaItemCount = player.mediaItemCount
                 val shuffleEnabled = player.shuffleModeEnabled
                 val timeline = player.currentTimeline
                 
-                // Build queue items: up to 2 previous, current, and up to 2 next songs
-                val queueItems = mutableListOf<MediaQueueItem>()
-                
-                // Get previous items respecting shuffle order
-                val prevItems = mutableListOf<androidx.media3.common.MediaItem>()
+                // Collect prev/next AppMediaMetadata first (sync, no network calls here)
+                val prevMetadataList = mutableListOf<AppMediaMetadata>()
                 if (!timeline.isEmpty) {
                     var prevIdx = currentIndex
                     for (i in 0 until 2) {
                         prevIdx = timeline.getPreviousWindowIndex(prevIdx, Player.REPEAT_MODE_OFF, shuffleEnabled)
                         if (prevIdx == androidx.media3.common.C.INDEX_UNSET) break
-                        prevItems.add(0, player.getMediaItemAt(prevIdx)) // Add at beginning to maintain order
+                        player.getMediaItemAt(prevIdx).metadata?.let { prevMetadataList.add(0, it) } // keep chronological order
                     }
                 }
                 
-                // Add previous items
-                for (prevItem in prevItems) {
-                    prevItem.metadata?.let { prevMetadata ->
-                        buildMediaInfo(prevMetadata)?.let { mediaInfo ->
-                            queueItems.add(MediaQueueItem.Builder(mediaInfo).build())
-                        }
-                    }
-                }
-                val startIndex = queueItems.size // Current item index after previous items
-                
-                // Add current item
-                val currentMediaInfo = buildMediaInfo(metadata)
-                if (currentMediaInfo == null) {
-                    Timber.e("Failed to get stream URL for Cast")
-                    _castIsBuffering.value = false
-                    return@launch
-                }
-                queueItems.add(MediaQueueItem.Builder(currentMediaInfo).build())
-                
-                // Get next items respecting shuffle order
+                val nextMetadataList = mutableListOf<AppMediaMetadata>()
                 if (!timeline.isEmpty) {
                     var nextIdx = currentIndex
                     for (i in 0 until 2) {
                         nextIdx = timeline.getNextWindowIndex(nextIdx, Player.REPEAT_MODE_OFF, shuffleEnabled)
                         if (nextIdx == androidx.media3.common.C.INDEX_UNSET) break
-                        val nextItem = player.getMediaItemAt(nextIdx)
-                        nextItem.metadata?.let { nextMetadata ->
-                            buildMediaInfo(nextMetadata)?.let { mediaInfo ->
-                                queueItems.add(MediaQueueItem.Builder(mediaInfo).build())
-                            }
-                        }
+                        player.getMediaItemAt(nextIdx).metadata?.let { nextMetadataList.add(it) }
                     }
                 }
+
+                // Resolve ALL stream URLs for the window (prev + current + next) IN PARALLEL.
+                // The old code awaited buildMediaInfo() one item at a time in a plain for-loop,
+                // which is what caused the ~5s delay on every track switch: up to 5 sequential
+                // network round-trips before the Cast device even got a queueLoad command.
+                val (prevMediaInfos, currentMediaInfo, nextMediaInfos) = coroutineScope {
+                    val prevDeferred = prevMetadataList.map { async { buildMediaInfo(it) } }
+                    val currentDeferred = async { buildMediaInfo(metadata) }
+                    val nextDeferred = nextMetadataList.map { async { buildMediaInfo(it) } }
+                    Triple(prevDeferred.awaitAll(), currentDeferred.await(), nextDeferred.awaitAll())
+                }
+                
+                if (currentMediaInfo == null) {
+                    Timber.e("Failed to get stream URL for Cast")
+                    _castIsBuffering.value = false
+                    return@launch
+                }
+                
+                val queueItems = mutableListOf<MediaQueueItem>()
+                prevMediaInfos.filterNotNull().forEach { queueItems.add(buildQueueItem(it)) }
+                val startIndex = queueItems.size // Current item index after previous items
+                queueItems.add(buildQueueItem(currentMediaInfo))
+                nextMediaInfos.filterNotNull().forEach { queueItems.add(buildQueueItem(it)) }
                 
                 // Get current position from local player if same song
                 val startPosition = if (player.currentMediaItem?.mediaId == metadata.id) {
