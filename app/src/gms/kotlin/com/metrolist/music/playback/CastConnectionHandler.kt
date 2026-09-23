@@ -235,7 +235,7 @@ class CastConnectionHandler(
                         val nextItem = musicService.player.getMediaItemAt(lastLocalIndex + i)
                         nextItem.metadata?.let { metadata ->
                             buildMediaInfo(metadata)?.let { mediaInfo ->
-                                itemsToAdd.add(MediaQueueItem.Builder(mediaInfo).build())
+                                itemsToAdd.add(MediaQueueItem.Builder(mediaInfo).setAutoplay(true).setPreloadTime(20.0).build())
                             }
                         }
                     }
@@ -290,7 +290,7 @@ class CastConnectionHandler(
                 for (prevItem in prevItems) {
                     prevItem.metadata?.let { prevMetadata ->
                         buildMediaInfo(prevMetadata)?.let { mediaInfo ->
-                            queueItems.add(MediaQueueItem.Builder(mediaInfo).build())
+                            queueItems.add(MediaQueueItem.Builder(mediaInfo).setAutoplay(true).setPreloadTime(20.0).build())
                         }
                     }
                 }
@@ -299,7 +299,7 @@ class CastConnectionHandler(
                 // Add current item
                 val currentMediaInfo = buildMediaInfo(metadata)
                 if (currentMediaInfo != null) {
-                    queueItems.add(MediaQueueItem.Builder(currentMediaInfo).build())
+                    queueItems.add(MediaQueueItem.Builder(currentMediaInfo).setAutoplay(true).setPreloadTime(20.0).build())
                 }
                 
                 // Get next items respecting shuffle order
@@ -311,7 +311,7 @@ class CastConnectionHandler(
                         val nextItem = player.getMediaItemAt(nextIdx)
                         nextItem.metadata?.let { nextMetadata ->
                             buildMediaInfo(nextMetadata)?.let { mediaInfo ->
-                                queueItems.add(MediaQueueItem.Builder(mediaInfo).build())
+                                queueItems.add(MediaQueueItem.Builder(mediaInfo).setAutoplay(true).setPreloadTime(20.0).build())
                             }
                         }
                     }
@@ -542,7 +542,7 @@ class CastConnectionHandler(
                 for (prevItem in prevItems) {
                     prevItem.metadata?.let { prevMetadata ->
                         buildMediaInfo(prevMetadata)?.let { mediaInfo ->
-                            queueItems.add(MediaQueueItem.Builder(mediaInfo).build())
+                            queueItems.add(MediaQueueItem.Builder(mediaInfo).setAutoplay(true).setPreloadTime(20.0).build())
                         }
                     }
                 }
@@ -555,7 +555,7 @@ class CastConnectionHandler(
                     _castIsBuffering.value = false
                     return@launch
                 }
-                queueItems.add(MediaQueueItem.Builder(currentMediaInfo).build())
+                queueItems.add(MediaQueueItem.Builder(currentMediaInfo).setAutoplay(true).setPreloadTime(20.0).build())
                 
                 // Get next items respecting shuffle order
                 if (!timeline.isEmpty) {
@@ -566,7 +566,7 @@ class CastConnectionHandler(
                         val nextItem = player.getMediaItemAt(nextIdx)
                         nextItem.metadata?.let { nextMetadata ->
                             buildMediaInfo(nextMetadata)?.let { mediaInfo ->
-                                queueItems.add(MediaQueueItem.Builder(mediaInfo).build())
+                                queueItems.add(MediaQueueItem.Builder(mediaInfo).setAutoplay(true).setPreloadTime(20.0).build())
                             }
                         }
                     }
